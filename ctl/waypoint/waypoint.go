@@ -252,27 +252,8 @@ func NewCmd() *cobra.Command {
 			}
 
 			if waitReady {
-				startTime := time.Now()
-				ticker := time.NewTicker(1 * time.Second)
-				defer ticker.Stop()
-				for range ticker.C {
-					programmed := false
-					gwc, err := kubeClient.GatewayAPI().GatewayV1().Gateways(ns).Get(cmd.Context(), gw.Name, metav1.GetOptions{})
-					if err == nil {
-						// Check if gateway has Programmed condition set to true
-						for _, cond := range gwc.Status.Conditions {
-							if cond.Type == string(gateway.GatewayConditionProgrammed) && string(cond.Status) == "True" {
-								programmed = true
-								break
-							}
-						}
-					}
-					if programmed {
-						break
-					}
-					if time.Since(startTime) > waitTimeout {
-						return errorWithMessage("timed out while waiting for waypoint", gwc, err)
-					}
+				if err := waitForProgrammed(cmd.Context(), kubeClient, gw, waitTimeout); err != nil {
+					return err
 				}
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "waypoint %v/%v applied\n", gw.Namespace, gw.Name)
@@ -530,6 +511,33 @@ func errorWithMessage(errMsg string, gwc *gateway.Gateway, err error) error {
 		errorMsg += fmt.Sprintf(": %s", err)
 	}
 	return fmt.Errorf("%s", errorMsg)
+}
+
+func waitForProgrammed(ctx context.Context, kubeClient kube.CLIClient, gw *gateway.Gateway, timeout time.Duration) error {
+	startTime := time.Now()
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		programmed := false
+		gwc, err := kubeClient.GatewayAPI().GatewayV1().Gateways(gw.Namespace).Get(ctx, gw.Name, metav1.GetOptions{})
+		if err == nil {
+			// Check if gateway has Programmed condition set to true
+			for _, cond := range gwc.Status.Conditions {
+				if cond.Type == string(gateway.GatewayConditionProgrammed) && string(cond.Status) == "True" {
+					programmed = true
+					break
+				}
+			}
+		}
+		if programmed {
+			return nil
+		}
+		if time.Since(startTime) > timeout {
+			// A failed poll returns an empty gateway, so report the applied one
+			return errorWithMessage("timed out while waiting for waypoint", gw, err)
+		}
+	}
+	return nil
 }
 
 func printWaypointStatus(ctx context.Context, w *tabwriter.Writer, kubeClient kube.CLIClient, gw []gateway.Gateway) error {
